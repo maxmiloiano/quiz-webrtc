@@ -1,0 +1,162 @@
+<!DOCTYPE html>
+<html lang="id">
+<head>
+  <meta charset="UTF-8">
+  <title>Real-Time Quiz Battle</title>
+  <style>
+    body { font-family: Arial; margin: 30px; }
+    button { padding: 10px; margin: 5px 0; }
+    #timer { color: red; font-weight: bold; }
+    #progress, #score { font-weight: bold; margin-bottom: 8px; }
+  </style>
+</head>
+<body>
+
+<h2>🎮 Real-Time Quiz Battle</h2>
+<button onclick="start()">Start Quiz</button>
+<div id="quiz"></div>
+
+<script>
+const socket = new WebSocket("ws://localhost:8080/ws")
+
+const pc = new RTCPeerConnection({
+  iceServers: [{ urls: "stun:stun.l.google.com:19302" }]
+})
+
+let dataChannel
+let startTime = 0
+let timerInterval
+let answered = false
+let currentQuestionId = null
+let totalScore = 0
+
+socket.onmessage = async (event) => {
+  const msg = JSON.parse(event.data)
+  if (msg.type === "answer") await pc.setRemoteDescription(msg.data)
+  if (msg.type === "candidate") await pc.addIceCandidate(msg.data)
+}
+
+pc.onicecandidate = e => {
+  if (e.candidate) {
+    socket.send(JSON.stringify({
+      type: "candidate",
+      data: e.candidate
+    }))
+  }
+}
+
+async function start() {
+  dataChannel = pc.createDataChannel("quiz")
+
+  dataChannel.onmessage = e => {
+    const data = JSON.parse(e.data)
+
+    if (data.type === "question") {
+      showQuestion(data)
+    }
+
+    if (data.type === "result") {
+      totalScore = data.score
+      updateScore()
+    }
+
+    if (data.type === "end") {
+      document.getElementById("quiz").innerHTML =
+        `<h3>🎉 Quiz selesai!</h3><p>🏆 Skor akhir: ${totalScore}</p>`
+    }
+  }
+
+  const offer = await pc.createOffer()
+  await pc.setLocalDescription(offer)
+
+  socket.send(JSON.stringify({
+    type: "offer",
+    data: offer
+  }))
+}
+
+function updateScore() {
+  let scoreDiv = document.getElementById("score")
+  if (!scoreDiv) {
+    scoreDiv = document.createElement("div")
+    scoreDiv.id = "score"
+    document.getElementById("quiz").prepend(scoreDiv)
+  }
+  scoreDiv.innerText = `🏆 Skor: ${totalScore}`
+}
+
+function showQuestion(q) {
+  const div = document.getElementById("quiz")
+  div.innerHTML = ""
+
+  answered = false
+  currentQuestionId = q.id
+
+  const score = document.createElement("div")
+  score.id = "score"
+  score.innerText = `🏆 Skor: ${totalScore}`
+  div.appendChild(score)
+
+  const progress = document.createElement("div")
+  progress.id = "progress"
+  progress.innerText = `📊 Soal ${q.progress.current} dari ${q.progress.total}`
+  div.appendChild(progress)
+
+  const timer = document.createElement("div")
+  timer.id = "timer"
+  div.appendChild(timer)
+
+  let remaining = q.duration
+  timer.innerText = `⏱ Sisa waktu: ${remaining} detik`
+
+  timerInterval = setInterval(() => {
+    remaining--
+    timer.innerText = `⏱ Sisa waktu: ${remaining} detik`
+    if (remaining <= 0) {
+      clearInterval(timerInterval)
+      timer.innerText = "⏰ Waktu habis"
+      if (!answered) autoSubmit()
+    }
+  }, 1000)
+
+  const title = document.createElement("h3")
+  title.innerText = q.question
+  div.appendChild(title)
+
+  startTime = Date.now()
+
+  q.options.forEach((opt, i) => {
+    const btn = document.createElement("button")
+    btn.innerText = opt
+    btn.onclick = () => sendAnswer(q.id, i)
+    div.appendChild(btn)
+    div.appendChild(document.createElement("br"))
+  })
+}
+
+function sendAnswer(id, answer) {
+  if (answered) return
+  answered = true
+  clearInterval(timerInterval)
+
+  dataChannel.send(JSON.stringify({
+    type: "answer",
+    id: id,
+    answer: answer,
+    time: Date.now() - startTime
+  }))
+}
+
+function autoSubmit() {
+  answered = true
+  dataChannel.send(JSON.stringify({
+    type: "answer",
+    id: currentQuestionId,
+    answer: -1,
+    time: Date.now() - startTime
+  }))
+}
+</script>
+
+</body>
+</html>
